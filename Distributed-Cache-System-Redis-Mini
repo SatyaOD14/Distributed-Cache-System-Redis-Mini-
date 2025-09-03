@@ -1,0 +1,111 @@
+# redis_mini_dashboard.py
+import streamlit as st
+from collections import OrderedDict
+import threading
+
+# -------------------------------
+# Redis Mini Implementation
+# -------------------------------
+class RedisMini:
+    def __init__(self, capacity=5, name="Cache", replica=None):
+        self.capacity = capacity
+        self.cache = OrderedDict()
+        self.lock = threading.Lock()
+        self.replica = replica
+        self.name = name
+
+    def put(self, key, value):
+        with self.lock:
+            evicted = None
+            if key in self.cache:
+                self.cache.pop(key)
+            elif len(self.cache) >= self.capacity:
+                evicted = self.cache.popitem(last=False)  # LRU eviction
+            self.cache[key] = value
+            if self.replica:
+                self.replica.put_replica(key, value)
+            return evicted
+
+    def put_replica(self, key, value):
+        with self.lock:
+            if key in self.cache:
+                self.cache.pop(key)
+            elif len(self.cache) >= self.capacity:
+                self.cache.popitem(last=False)
+            self.cache[key] = value
+
+    def get(self, key):
+        with self.lock:
+            if key not in self.cache:
+                return None
+            value = self.cache.pop(key)
+            self.cache[key] = value
+            return value
+
+    def delete(self, key):
+        with self.lock:
+            if key in self.cache:
+                self.cache.pop(key)
+            if self.replica:
+                self.replica.delete_replica(key)
+
+    def delete_replica(self, key):
+        with self.lock:
+            if key in self.cache:
+                self.cache.pop(key)
+
+    def display(self):
+        with self.lock:
+            return dict(self.cache)
+
+# -------------------------------
+# Streamlit Dashboard
+# -------------------------------
+st.set_page_config(page_title="Redis Mini Dashboard", layout="wide")
+st.title("🗄 Redis Mini Cache Simulator")
+
+# Create primary and replica caches
+if 'primary' not in st.session_state:
+    st.session_state.replica = RedisMini(capacity=5, name="Replica")
+    st.session_state.primary = RedisMini(capacity=5, name="Primary", replica=st.session_state.replica)
+
+primary = st.session_state.primary
+replica = st.session_state.replica
+
+# Sidebar for operations
+st.sidebar.header("Operations")
+operation = st.sidebar.radio("Select Operation", ["PUT", "GET", "DELETE"])
+key = st.sidebar.text_input("Key")
+value = st.sidebar.text_input("Value (for PUT only)")
+
+if st.sidebar.button("Execute"):
+    if operation == "PUT":
+        if key and value:
+            evicted = primary.put(key, value)
+            if evicted:
+                st.success(f"Evicted LRU: {evicted[0]} → {evicted[1]}")
+            st.success(f"PUT {key}: {value} in Primary & Replica")
+        else:
+            st.warning("Enter both Key and Value for PUT")
+    elif operation == "GET":
+        if key:
+            val = primary.get(key)
+            if val is not None:
+                st.success(f"GET {key}: {val}")
+            else:
+                st.error(f"{key} not found")
+        else:
+            st.warning("Enter Key to GET")
+    elif operation == "DELETE":
+        if key:
+            primary.delete(key)
+            st.success(f"Deleted {key} from Primary & Replica")
+        else:
+            st.warning("Enter Key to DELETE")
+
+# Display caches
+st.subheader("Primary Cache")
+st.table(primary.display())
+
+st.subheader("Replica Cache")
+st.table(replica.display())
